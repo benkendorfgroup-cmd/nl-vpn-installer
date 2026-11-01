@@ -1,4 +1,5 @@
 """Offline safety/contract tests. These do NOT replace a Debian systemd install."""
+import ast
 import contextlib
 import hashlib
 import io
@@ -37,6 +38,16 @@ PROXY = {"address": "198.51.100.20", "port": 3128, "user": "fixture", "pass": "f
 
 
 class InputTests(unittest.TestCase):
+    def test_debian_versions_are_explicitly_supported(self):
+        for distro, version, accepted in [("debian", "12", True), ("debian", "13", True),
+                ("debian", "11", False), ("debian", "14", False), ("ubuntu", "12", False),
+                ("ubuntu", "24.04", False), ("", "", False)]:
+            with self.subTest(distro=distro, version=version):
+                self.assertEqual(app.supported_release({"ID": distro, "VERSION_ID": version}), accepted)
+
+    def test_installer_uses_python_311_syntax(self):
+        ast.parse(Path(app.__file__).read_text(encoding="utf-8"), feature_version=(3, 11))
+
     def test_rejects_private_and_command_like_addresses(self):
         for address in ("127.0.0.1", "10.0.0.1", "192.168.2.1", "::1", "8.8.8.8;id",
                         "8.8.8.8\nls", "example.com", "224.0.0.1", "169.254.169.254"):

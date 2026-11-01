@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Small, pinned 3x-ui/VLESS installer. No action without --install + confirmation.
 
-Only Python's standard library is required. Run on Debian 13, never on Windows.
+Only Python's standard library is required. Run on Debian 12/13, never on Windows.
 Credentials are generated or entered on the target; this file contains none.
 """
 from __future__ import annotations
@@ -111,22 +111,29 @@ def check_port(port: int):
         raise Stop(f"TCP-порт {port} уже занят или недоступен. Существующую службу не трогаю.") from None
 
 
+def supported_release(release):
+    return release.get("ID") == "debian" and release.get("VERSION_ID") in ("12", "13")
+
+
 def check_runtime():
     if sys.platform != "linux":
-        raise Stop("Этот установщик запускается только на сервере Debian 13 через SSH.")
+        raise Stop("Этот установщик запускается только на сервере Debian 12 или 13 через SSH.")
     if os.geteuid() != 0:
         raise Stop("Запусти проверку с sudo: sudo python3 install.py --check")
     release = platform.freedesktop_os_release()
-    if release.get("ID") != "debian" or release.get("VERSION_ID") != "13":
-        raise Stop("Эта версия установщика рассчитана на Debian 13. ОС автоматически не меняется.")
+    if not supported_release(release):
+        raise Stop("Эта версия установщика рассчитана на Debian 12 или 13. ОС автоматически не меняется.")
+    if sys.version_info < (3, 11):
+        raise Stop("Нужен штатный Python 3.11 или новее из Debian 12/13.")
     if platform.machine() not in RELEASES:
         raise Stop("Поддерживаются только Debian amd64 и arm64.")
     if not Path("/run/systemd/system").is_dir():
         raise Stop("Нужен сервер с systemd; контейнер без systemd не подходит.")
+    return release["VERSION_ID"]
 
 
 def preflight(port: int):
-    check_runtime()
+    debian_version = check_runtime()
     required = ("systemctl", "systemd-analyze", "useradd", "runuser", "curl", "ss")
     missing = [name for name in required if not shutil.which(name)]
     if missing:
@@ -157,7 +164,7 @@ def preflight(port: int):
         raise Stop("Порт подключения совпал со служебным портом панели.")
     for value in (port, PANEL_PORT, API_PORT):
         check_port(value)
-    print(f"Проверка пройдена: Debian 13, {platform.machine()}, нужные порты свободны.")
+    print(f"Проверка пройдена: Debian {debian_version}, {platform.machine()}, нужные порты свободны.")
     print("Файлы других служб и их данные не читались. Файрвол и внешняя доступность ещё не проверены.")
 
 
@@ -741,7 +748,7 @@ def install(port: int | None = None, *, quick=False):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="NL: 3x-ui на Debian 13. По умолчанию только проверка.")
+    parser = argparse.ArgumentParser(description="NL: 3x-ui на Debian 12/13. По умолчанию только проверка.")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--check", action="store_true", help="Проверить совместимость без установки (по умолчанию)")
     action.add_argument("--install", action="store_true", help="Проверка и интерактивная установка")

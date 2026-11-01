@@ -2,18 +2,20 @@
 # Download a pinned installer; never contains VPS/proxy credentials.
 set -euo pipefail
 
-INSTALLER_URL='https://raw.githubusercontent.com/benkendorfgroup-cmd/nl-vpn-installer/v1.0.0/install.py'
-INSTALLER_SHA256='03633187655493181b7e9307106de9d22afffa3ae41023be9e1daea1cfbd7af3'
+INSTALLER_URL='https://raw.githubusercontent.com/benkendorfgroup-cmd/nl-vpn-installer/v1.0.1/install.py'
+INSTALLER_SHA256='261e5a3ed8c84dda1e7d38c57f92da968a3aeefcf8e7256e80051087f24b481a'
 
 fail() { printf '%s\n' "$*" >&2; return 1; }
 
+supports_debian() { [[ ${1:-} == debian && ( ${2:-} == 12 || ${2:-} == 13 ) ]]; }
+
 check_system() {
-    [[ $(uname -s) == Linux ]] || { fail 'Запускай на сервере Debian 13 через SSH.'; return 1; }
+    [[ $(uname -s) == Linux ]] || { fail 'Запускай на сервере Debian 12/13 через SSH.'; return 1; }
     [[ $EUID -eq 0 ]] || { fail 'Нужны права root. Запусти через sudo bash bootstrap.sh.'; return 1; }
     [[ -t 0 && -t 1 ]] || { fail 'Нужен обычный интерактивный SSH-терминал.'; return 1; }
-    [[ -f /etc/os-release && -d /run/systemd/system ]] || { fail 'Нужна Debian 13 с systemd.'; return 1; }
+    [[ -f /etc/os-release && -d /run/systemd/system ]] || { fail 'Нужна Debian 12/13 с systemd.'; return 1; }
     . /etc/os-release
-    [[ ${ID:-} == debian && ${VERSION_ID:-} == 13 ]] || { fail 'Эта установка рассчитана только на Debian 13.'; return 1; }
+    supports_debian "${ID:-}" "${VERSION_ID:-}" || { fail 'Нужна Debian 12 или 13.'; return 1; }
     case $(uname -m) in x86_64|aarch64) ;; *) fail 'Нужна архитектура amd64 или arm64.'; return 1 ;; esac
     local path
     for path in /opt/nl-vpn /var/lib/nl-vpn /var/log/nl-vpn /root/nl-vpn-access \

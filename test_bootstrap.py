@@ -23,6 +23,13 @@ def shell_path(path):
 
 @unittest.skipUnless(BASH, "Bash not available")
 class BootstrapTests(unittest.TestCase):
+    def test_supported_debian_releases(self):
+        for distro, version, accepted in [("debian", "12", True), ("debian", "13", True),
+                ("debian", "11", False), ("debian", "14", False), ("ubuntu", "12", False)]:
+            with self.subTest(distro=distro, version=version):
+                result = self.run_shell("supports_debian " + shlex.quote(distro) + " " + shlex.quote(version))
+                self.assertEqual(result.returncode == 0, accepted)
+
     def run_shell(self, body):
         return subprocess.run([BASH, "--noprofile", "--norc", "-c",
                                "source " + shell_path(ROOT / "bootstrap.sh") + "\n" + body],
