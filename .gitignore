@@ -1,0 +1,10 @@
+reference/
+__pycache__/
+*.pyc
+*.zip
+*.log
+NL.txt
+panel.txt
+result.json
+.private*
+.test-tmp/
