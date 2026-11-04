@@ -2,8 +2,8 @@
 # Download a pinned installer; never contains VPS/proxy credentials.
 set -euo pipefail
 
-INSTALLER_URL='https://raw.githubusercontent.com/benkendorfgroup-cmd/nl-vpn-installer/v1.0.1/install.py'
-INSTALLER_SHA256='261e5a3ed8c84dda1e7d38c57f92da968a3aeefcf8e7256e80051087f24b481a'
+INSTALLER_URL='https://raw.githubusercontent.com/benkendorfgroup-cmd/nl-vpn-installer/v1.1.0/install.py'
+INSTALLER_SHA256='794592b0360346cbf692b3489f2c8e436af9bab2d9ac373c27acc3cd40ed5f13'
 
 fail() { printf '%s\n' "$*" >&2; return 1; }
 

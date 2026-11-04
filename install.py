@@ -229,13 +229,14 @@ def build_template(port: int, proxy: dict | None):
     tag = f"in-{port}-tcp"
     route = lambda inbound, outbound, **fields: {
         "type": "field", "inboundTag": [inbound], "outboundTag": outbound, **fields}
-    egress = ({"tag": "egress", "protocol": "http", "settings": proxy} if proxy else
+    egress = ({"tag": "egress", "protocol": proxy.get("protocol", "http"),
+               "settings": {k: v for k, v in proxy.items() if k != "protocol"}} if proxy else
               {"tag": "egress", "protocol": "freedom", "settings": {
                   "finalRules": [{"action": "block", "ip": ["geoip:private"]}, {"action": "allow"}]}})
     rules = [route("api", "api"), route("dns-query", "egress"),
              route(tag, "dns-out", network="tcp,udp", port="53"),
              {"type": "field", "ip": ["geoip:private"], "outboundTag": "blocked"}]
-    if proxy:
+    if proxy and egress["protocol"] == "http":
         rules.append(route(tag, "blocked", network="udp"))
     rules.append(route(tag, "egress"))
     return {
@@ -255,9 +256,9 @@ def build_template(port: int, proxy: dict | None):
     }
 
 
-def build_inbound(port: int, credentials: dict):
+def build_inbound(port: int, credentials: dict, name="NL"):
     return {
-        "remark": "NL", "enable": True, "listen": "0.0.0.0", "port": port,
+        "remark": name, "enable": True, "listen": "0.0.0.0", "port": port,
         "protocol": "vless", "expiryTime": 0, "total": 0,
         "settings": {"clients": [{"id": credentials["uuid"], "flow": "xtls-rprx-vision",
             "email": "device-1", "limitIp": 0, "totalGB": 0, "expiryTime": 0,
@@ -275,11 +276,11 @@ def build_inbound(port: int, credentials: dict):
     }
 
 
-def profile_uri(address: str, port: int, credentials: dict):
+def profile_uri(address: str, port: int, credentials: dict, name="NL"):
     parameters = {"encryption": "none", "security": "reality", "sni": SNI,
                   "fp": "chrome", "pbk": credentials["public"], "sid": credentials["short_id"],
                   "type": "tcp", "flow": "xtls-rprx-vision", "spx": "/"}
-    return f"vless://{credentials['uuid']}@{address}:{port}?{urllib.parse.urlencode(parameters)}#NL"
+    return f"vless://{credentials['uuid']}@{address}:{port}?{urllib.parse.urlencode(parameters)}#{urllib.parse.quote(name)}"
 
 
 def set_settings(path: Path, values: dict):
@@ -413,12 +414,12 @@ def running_core(xray: Path, config: dict, folder: Path, name: str, port: int):
                 process.wait(5)
 
 
-def client_config(port: int, socks_port: int, credentials: dict):
+def client_config(port: int, socks_port: int, credentials: dict, address="127.0.0.1"):
     return {"log": {"loglevel": "warning"},
         "inbounds": [{"listen": "127.0.0.1", "port": socks_port, "protocol": "socks",
                       "settings": {"auth": "noauth", "udp": True}}],
         "outbounds": [{"protocol": "vless", "settings": {"vnext": [{
-            "address": "127.0.0.1", "port": port, "users": [{"id": credentials["uuid"],
+            "address": address, "port": port, "users": [{"id": credentials["uuid"],
             "encryption": "none", "flow": "xtls-rprx-vision"}]}]},
             "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {
                 "fingerprint": "chrome", "serverName": SNI, "publicKey": credentials["public"],
@@ -483,7 +484,7 @@ def verify_egress(xray, port, credentials, expected_ip, template):
             dns_check(socks_port)
         # Exercise the identical routing/outbound policy in a separate process.
         # The installed service is never reconfigured to simulate a failure.
-        if any(item["protocol"] == "http" for item in template["outbounds"]):
+        if any(item["protocol"] in ("http", "socks") for item in template["outbounds"]):
             failed = copy.deepcopy(template)
             failed.pop("api", None)
             failed.pop("stats", None)
@@ -539,22 +540,25 @@ def proxy_username(value):
     return value
 
 
+def hidden_input(prompt):
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            return getpass.getpass(prompt)
+    except getpass.GetPassWarning:
+        raise Stop("Терминал не позволяет скрыть ввод. Открой обычное SSH-соединение и повтори запуск.") from None
+
+
 def ask_password():
     while True:
-        try:
-            with warnings.catch_warnings():
-                # getpass otherwise falls back to visible input on a broken terminal.
-                warnings.simplefilter("error", getpass.GetPassWarning)
-                password = getpass.getpass("Пароль прокси (ввод скрыт): ")
-        except getpass.GetPassWarning:
-            raise Stop("Терминал не позволяет скрыть пароль. Открой обычное SSH-соединение и повтори запуск.") from None
+        password = hidden_input("Пароль прокси (ввод скрыт): ")
         if password and not any(ord(c) < 32 or ord(c) == 127 for c in password):
             return password
         print("Нужен непустой пароль без служебных символов. Попробуй ещё раз.")
 
 
 def collect_options():
-    print("\nАдрес VPS — из панели сервера. Адрес и HTTP-порт прокси — из кабинета Proxy-Seller.")
+    print("\nАдрес VPS — из панели сервера. Адрес и HTTP-порт прокси — из кабинета продавца.")
     print("Это разные адреса. SSH-пароль сюда вводить не нужно.")
     address = ask("Публичный IPv4 этого VPS", ipv4)
     mode = ask("Выход: 1 — через IP VPS; 2 — через купленный HTTP-прокси", choice, "2")
@@ -600,15 +604,62 @@ def server_address():
         return ask("Не удалось определить адрес автоматически. Публичный IPv4 этого VPS", ipv4)
 
 
+def parse_proxy_line(line):
+    if any(ord(c) < 32 or ord(c) == 127 for c in line):
+        raise Stop("В строке прокси есть служебные символы.")
+    scheme, separator, endpoint = line.partition("://")
+    if not separator:
+        scheme, endpoint = "socks5", line
+    if scheme not in ("socks5", "http"):
+        raise Stop("Поддерживаются SOCKS5 и HTTP CONNECT.")
+    parts = endpoint.split(":", 3)
+    if len(parts) not in (2, 4):
+        raise Stop("Вставь IP:порт или IP:порт:логин:пароль.")
+    proxy = {"protocol": "socks" if scheme == "socks5" else "http",
+             "address": ipv4(parts[0]), "port": port_number(parts[1])}
+    if len(parts) == 4:
+        proxy["user"] = proxy_username(parts[2])
+        if not parts[3]:
+            raise Stop("Указан логин без пароля.")
+        proxy["pass"] = parts[3]
+    return proxy
+
+
+def verify_proxy_line(proxy):
+    scheme = "socks5h" if proxy["protocol"] == "socks" else "http"
+    endpoint = f"{scheme}://{proxy['address']}:{proxy['port']}"
+    # Keep credentials off the command line, disk and diagnostic output.
+    config = ""
+    if "user" in proxy:
+        credential = (proxy["user"] + ":" + proxy["pass"]).replace("\\", "\\\\").replace('"', '\\"')
+        config = f'proxy-user = "{credential}"\n'
+    try:
+        response = subprocess.run(
+            ["curl", "-q", "--config", "-", "--noproxy", "", "--proxy", endpoint, "--silent",
+             "--fail", "--connect-timeout", "8", "--max-time", "20", "https://api.ipify.org"],
+            input=config.encode(), capture_output=True, env=clean_environment(), timeout=25)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Stop("Проверка прокси не завершилась. Проверь доступность прокси и повтори.") from None
+    if response.returncode:
+        raise Stop("Проверка не прошла. Сверь тип, порт и доступ по IP VPS или вставь строку с логином и паролем.")
+    if response.stdout.strip() != proxy["address"].encode():
+        raise Stop("Прокси вернул другой выходной IP. Для такого прокси быстрый режим не подходит.")
+
+
 def collect_quick_options():
     address = server_address()
     print(f"\nАдрес сервера: {address}.")
-    print("Введи четыре значения из кабинета Proxy-Seller. SSH-пароль сюда не нужен.")
-    host = ask("IP купленного статического прокси", ipv4)
-    port = ask("HTTP-порт прокси (не SOCKS)", port_number)
-    username = ask("Логин прокси", proxy_username)
-    password = ask_password()
-    return address, {"address": host, "port": port, "user": username, "pass": password}, host
+    print("Вставь SOCKS5-прокси одной строкой: IP:порт либо IP:порт:логин:пароль.")
+    print("Если используешь HTTP-порт, добавь http:// перед IP. Для отмены нажми Ctrl+C.")
+    while True:
+        line = hidden_input("Строка прокси (ввод скрыт): ")
+        try:
+            proxy = parse_proxy_line(line)
+            verify_proxy_line(proxy)
+        except Stop as error:
+            print(str(error))
+            continue
+        return address, proxy, proxy["address"]
 
 
 def install(port: int | None = None, *, quick=False):
@@ -624,7 +675,9 @@ def install(port: int | None = None, *, quick=False):
     print(f"\nБудут созданы отдельная служба nl-vpn и подключение TCP/{port} на {address}.")
     print("Панель: только 127.0.0.1:2053. SSH, системный DNS и правила файрвола не меняются.")
     print("Чужие каталоги не читаются. Повторная установка и перезапись существующих файлов запрещены.")
-    print(f"Ожидаемый выход: {expected}. Режим: {'HTTP-прокси' if proxy else 'IP VPS'}.")
+    protocol = proxy.get("protocol", "http") if proxy else "direct"
+    profile_name = f"proxy-{expected}" if quick else "NL"
+    print(f"Ожидаемый выход: {expected}. Режим: {protocol}.")
     if input("Для установки введи INSTALL: ").strip() != "INSTALL":
         raise Stop("Отменено. Служба VPN не создавалась.")
     # Repeat immediately before mutation to catch state changes during the prompts.
@@ -707,7 +760,7 @@ def install(port: int | None = None, *, quick=False):
         panel.login(username, password)
         if panel.request("/panel/api/inbounds/list"):
             raise Stop("В новой панели неожиданно уже есть подключения; останавливаюсь.")
-        inbound = build_inbound(port, credentials)
+        inbound = build_inbound(port, credentials, profile_name)
         panel.request("/panel/api/inbounds/add", inbound)
         listed = panel.request("/panel/api/inbounds/list")
         if len(listed) != 1 or listed[0].get("tag") != f"in-{port}-tcp":
@@ -723,11 +776,13 @@ def install(port: int | None = None, *, quick=False):
                 raise Stop("Служебный порт слушает не только localhost. Служба будет остановлена.")
         command(["systemctl", "is-active", "--quiet", "nl-vpn.service"])
         command(["systemctl", "enable", "nl-vpn.service"], log=True)
-        uri = profile_uri(address, port, credentials)
+        uri = profile_uri(address, port, credentials, profile_name)
         private_write(ACCESS / "NL.txt", uri + "\n")
+        profile_path = ACCESS / f"{profile_name}.json"
+        json_write(profile_path, client_config(port, 10808, credentials, address))
         report = {"installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                   "panel_version": VERSION, "release_sha256": digest, "exit_ip": actual,
-                  "mode": "http-proxy" if proxy else "direct", "tcp_port": port,
+                  "mode": f"{protocol}-proxy" if proxy else "direct", "tcp_port": port,
                   "checks": {"server_vless_roundtrip": True, "dns_via_vpn": True,
                              "proxy_failure_in_isolated_copy": bool(proxy), "panel_loopback_only": True},
                   "external_client_test": "pending", "client_kill_switch_test": "pending"}
@@ -737,6 +792,7 @@ def install(port: int | None = None, *, quick=False):
         print(uri)
         print("Ссылка даёт доступ к VPN. Не публикуй её.")
         print(f"Получить её снова: sudo cat {ACCESS}/NL.txt")
+        print(f"Профиль для импорта в AmneziaVPN: {profile_path}")
         print(f"Доступ к панели: sudo cat {ACCESS}/panel.txt")
         print(f"Осталось разрешить только TCP/{port} в используемом файрволе и проверить с другого устройства.")
     except BaseException:
@@ -752,7 +808,7 @@ def main(argv=None):
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--check", action="store_true", help="Проверить совместимость без установки (по умолчанию)")
     action.add_argument("--install", action="store_true", help="Проверка и интерактивная установка")
-    action.add_argument("--quick", action="store_true", help="Установка через статический HTTP-прокси: автоматический адрес VPS и порт VPN")
+    action.add_argument("--quick", action="store_true", help="Статический SOCKS5 или HTTP-прокси одной строкой")
     parser.add_argument("--port", help="TCP-порт VLESS: при установке спрашивается; для --check по умолчанию 443")
     args = parser.parse_args(argv)
     try:

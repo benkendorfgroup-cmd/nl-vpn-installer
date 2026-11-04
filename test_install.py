@@ -188,18 +188,55 @@ class WizardTests(unittest.TestCase):
 
 
 class QuickTests(unittest.TestCase):
-    def test_quick_mode_only_asks_for_proxy_credentials(self):
+    def test_quick_mode_reads_one_hidden_line_and_checks_it(self):
         with patch.object(app, "server_address", return_value="8.8.8.8"), \
-             patch("builtins.input", side_effect=["1.1.1.1", "3128", "proxy-login"]) as prompt, \
-             patch.object(app.getpass, "getpass", return_value="  exact password  ") as hidden, \
+             patch("builtins.input") as prompt, patch.object(app, "verify_proxy_line") as verify, \
+             patch.object(app.getpass, "getpass", return_value="1.1.1.1:1080:test:  exact password  ") as hidden, \
              contextlib.redirect_stdout(io.StringIO()) as output:
             address, proxy, expected = app.collect_quick_options()
-        self.assertEqual(prompt.call_count, 3)
+        prompt.assert_not_called()
         hidden.assert_called_once()
+        verify.assert_called_once_with(proxy)
         self.assertEqual(address, "8.8.8.8")
         self.assertEqual(expected, "1.1.1.1")
         self.assertEqual(proxy["pass"], "  exact password  ")
         self.assertNotIn(proxy["pass"], output.getvalue())
+
+    def test_quick_ip_authorization_and_http(self):
+        self.assertEqual(app.parse_proxy_line("1.1.1.1:1080"),
+                         {"protocol": "socks", "address": "1.1.1.1", "port": 1080})
+        self.assertEqual(app.parse_proxy_line("http://1.1.1.1:3128:u:p:x"),
+                         {"protocol": "http", "address": "1.1.1.1", "port": 3128, "user": "u", "pass": "p:x"})
+        for bad in ["127.0.0.1:80", "1.1.1.1:0", "1.1.1.1:80:u", "1.1.1.1:80:u:", "1.1.1.1:80:u:p\nx",
+                    "https://1.1.1.1:80", "socks4://1.1.1.1:1080"]:
+            with self.subTest(bad=bad), self.assertRaises(app.Stop):
+                app.parse_proxy_line(bad)
+
+    def test_probe_credentials_only_in_stdin_and_requires_exact_ip(self):
+        proxy = app.parse_proxy_line('socks5://1.1.1.1:1080:test:a"b\\c')
+        with patch.object(app.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = b"1.1.1.1"
+            app.verify_proxy_line(proxy)
+            self.assertNotIn(proxy["pass"], repr(run.call_args.args))
+            self.assertIn("socks5h://1.1.1.1:1080", run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs["input"], b'proxy-user = "test:a\\"b\\\\c"\n')
+            run.return_value.stdout = b"8.8.8.8"
+            with self.assertRaises(app.Stop):
+                app.verify_proxy_line(proxy)
+
+    def test_socks_egress_and_amnezia_profile(self):
+        proxy = app.parse_proxy_line("1.1.1.1:1080:fixture:private-proxy-password")
+        config = app.build_template(8443, proxy)
+        egress = next(e for e in config["outbounds"] if e["tag"] == "egress")
+        self.assertEqual(egress["protocol"], "socks")
+        self.assertNotIn("protocol", egress["settings"])
+        self.assertFalse(any(e["protocol"] == "freedom" for e in config["outbounds"]))
+        profile = app.client_config(8443, 10808, FAKE, "8.8.8.8")
+        server = profile["outbounds"][0]["settings"]["vnext"][0]
+        self.assertEqual((server["address"], server["port"]), ("8.8.8.8", 8443))
+        self.assertNotIn(FAKE["private"], json.dumps(profile))
+        self.assertNotIn(proxy["pass"], json.dumps(profile))
 
     def test_quick_flag_runs_quick_install(self):
         with patch.object(app, "install") as install:
